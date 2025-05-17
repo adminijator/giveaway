@@ -1,0 +1,4 @@
+asyncpg
+python-telegram-bot==20.0
+nest_asyncio
+```

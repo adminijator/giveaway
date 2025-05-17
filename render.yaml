@@ -1,0 +1,14 @@
+environment:
+  name: python
+  version: 3.9.7
+
+build:
+  commands:
+    - pip install -r requirements.txt
+
+start:
+  command: python bot.py
+
+publish:
+  branch: main
+  auto-deploy: true
