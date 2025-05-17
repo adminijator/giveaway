@@ -22,7 +22,7 @@ ADMIN_ID = 6784563936  # Replace with your actual Telegram user ID
 CHANNEL_USERNAME = "@cashearnify"
 GROUP_USERNAME = "@homeofupdatez"
 
-POSTGRES_URL = "postgresql://user:password@host:port/dbname"  # <-- Set your PostgreSQL URL here
+POSTGRES_URL = "postgresql://giveaway_bot_user:ViuIAmXCDCg2wG0mfRSuTVMXPkiGfaiM@dpg-d0ju8o7fte5s7386gtrg-a/giveaway_bot"  # <-- Set your PostgreSQL URL here
 
 ASK_NAME, ASK_EMAIL, ASK_ACCOUNT, CHANGE_NAME, CHANGE_EMAIL = range(5)
 
