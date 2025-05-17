@@ -1139,7 +1139,7 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
 
     print("✅ Bot is running...")
-    await app.run_polling(close_loop=False)
+    app.run_polling(close_loop=False)
 
 if __name__ == "__main__":
     import nest_asyncio
