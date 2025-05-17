@@ -1,11 +1,9 @@
 import asyncio
 import logging
 import asyncpg
-import nest_asyncio
 import time
 import csv
 from io import StringIO
-nest_asyncio.apply()
 from telegram import Update, ReplyKeyboardMarkup, InputFile
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -22,7 +20,7 @@ ADMIN_ID = 6784563936  # Replace with your actual Telegram user ID
 CHANNEL_USERNAME = "@cashearnify"
 GROUP_USERNAME = "@homeofupdatez"
 
-POSTGRES_URL = "postgresql://giveaway_bot_user:ViuIAmXCDCg2wG0mfRSuTVMXPkiGfaiM@dpg-d0ju8o7fte5s7386gtrg-a/giveaway_bot"  # <-- Set your PostgreSQL URL here
+POSTGRES_URL = "postgresql://giveaway_bot_user:ViuIAmXCDCg2wG0mfRSuTVMXPkiGfaiM@dpg-d0ju8o7fte5s7386gtrg-a/giveaway_bot"
 
 ASK_NAME, ASK_EMAIL, ASK_ACCOUNT, CHANGE_NAME, CHANGE_EMAIL = range(5)
 ASK_BANK_NAME, ASK_ACCOUNT_NUMBER, ASK_ACCOUNT_NAME, CHOOSE_BALANCE, ASK_WITHDRAW_AMOUNT = range(100, 105)
@@ -96,6 +94,17 @@ async def init_db():
         )
         """
     )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_banks (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
+            bank_name TEXT,
+            account_number TEXT,
+            account_name TEXT
+        )
+        """
+    )
     await conn.close()
 
 async def has_completed_task(user_id, task_name):
@@ -130,7 +139,7 @@ def get_tasks_keyboard():
         ["✅ Join Group (₦1000)"],
         ["📈 Earning History"],
         ["🗓️ Daily Tasks"],
-        ["⬅️ Back"]
+        ["⬅️ Go Back", "🏠 Main Menu"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -157,6 +166,10 @@ def get_export_keyboard():
         ["⬅️ Cancel Export"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_go_back_keyboard():
+    return ReplyKeyboardMarkup([["⬅️ Go Back", "🏠 Main Menu"]], resize_keyboard=True)
+
 
 # ======================
 # Bot Handlers
@@ -394,57 +407,129 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif text == "🏧 Withdrawal":
-        context.user_data["withdraw"] = {}
-        await update.message.reply_text("🏦 Enter your Bank Name:")
-        context.user_data["withdraw_state"] = ASK_BANK_NAME
-        return
-
-    elif context.user_data.get("withdraw_state") == ASK_BANK_NAME:
-        context.user_data["withdraw"]["bank_name"] = text
-        await update.message.reply_text("🔢 Enter your Account Number:")
-        context.user_data["withdraw_state"] = ASK_ACCOUNT_NUMBER
-        return
-
-    elif context.user_data.get("withdraw_state") == ASK_ACCOUNT_NUMBER:
-        context.user_data["withdraw"]["account_number"] = text
-        await update.message.reply_text("👤 Enter your Account Name:")
-        context.user_data["withdraw_state"] = ASK_ACCOUNT_NAME
-        return
-
-    elif context.user_data.get("withdraw_state") == ASK_ACCOUNT_NAME:
-        context.user_data["withdraw"]["account_name"] = text
-        # Fetch balances and referrals
+        # Show user's saved bank accounts and add account option
         conn = await asyncpg.connect(POSTGRES_URL)
-        row = await conn.fetchrow("SELECT main_balance, reward_balance, earning_balance, referral_balance, referrals FROM users WHERE user_id = $1", user_id)
+        banks = await conn.fetch("SELECT id, bank_name, account_number, account_name FROM user_banks WHERE user_id = $1", user_id)
         await conn.close()
-        main = row["main_balance"] if row else 0
-        reward = row["reward_balance"] if row else 0
-        earning = row["earning_balance"] if row else 0
-        referral = row["referral_balance"] if row else 0
-        referrals = row["referrals"] if row else 0
-        keyboard = [
-            [f"Main Balance (₦{main})"],
-            [f"Reward Balance (₦{reward})"],
-            [f"Earning Balance (₦{earning})"],
-            [f"Referral Balance (₦{referral})"]
-        ]
+        keyboard = []
+        for bank in banks:
+            keyboard.append([f"{bank['bank_name']} | {bank['account_number']} | {bank['account_name']}"])
+        if len(banks) < 2:
+            keyboard.append(["➕ Add Account"])
+        keyboard.append(["⬅️ Go Back", "🏠 Main Menu"])
         await update.message.reply_text(
-            "💸 Which balance do you want to withdraw from?\n\n"
-            "• Main Balance: Withdraw anytime, any amount.\n"
-            "• Reward Balance: Withdraw anytime, any amount **after 10 referrals**.\n"
-            "• Earning Balance: Withdraw only if you have **10 referrals** and minimum ₦45,000.\n"
-            "• Referral Balance: Withdraw only if you have **10 referrals** and minimum ₦20,000.",
+            "🏦 Select a bank account for withdrawal or add a new one:",
             reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
         )
-        context.user_data["withdraw_state"] = CHOOSE_BALANCE
-        context.user_data["withdraw"]["referrals"] = referrals
-        context.user_data["withdraw"]["main"] = main
-        context.user_data["withdraw"]["reward"] = reward
-        context.user_data["withdraw"]["earning"] = earning
-        context.user_data["withdraw"]["referral"] = referral
+        context.user_data["withdraw_state"] = "choose_bank"
+        return
+
+    elif context.user_data.get("withdraw_state") == "choose_bank":
+        if text == "➕ Add Account":
+            await update.message.reply_text("🏦 Enter your Bank Name:", reply_markup=get_go_back_keyboard())
+            context.user_data["withdraw_state"] = "add_bank_name"
+            return
+        elif text == "⬅️ Go Back" or text == "🏠 Main Menu":
+            await update.message.reply_text("🔙 Back to main menu.", reply_markup=get_main_keyboard(user_id))
+            context.user_data["withdraw_state"] = None
+            return
+        else:
+            # User selected a bank account
+            conn = await asyncpg.connect(POSTGRES_URL)
+            bank = await conn.fetchrow(
+                "SELECT * FROM user_banks WHERE user_id = $1 AND CONCAT(bank_name, ' | ', account_number, ' | ', account_name) = $2",
+                user_id, text
+            )
+            await conn.close()
+            if not bank:
+                await update.message.reply_text("❌ Invalid selection. Please try again.", reply_markup=get_go_back_keyboard())
+                return
+            context.user_data["withdraw_bank"] = bank
+            # Fetch balances and referrals
+            conn = await asyncpg.connect(POSTGRES_URL)
+            row = await conn.fetchrow("SELECT main_balance, reward_balance, earning_balance, referral_balance, referrals FROM users WHERE user_id = $1", user_id)
+            await conn.close()
+            main = row["main_balance"] if row else 0
+            reward = row["reward_balance"] if row else 0
+            earning = row["earning_balance"] if row else 0
+            referral = row["referral_balance"] if row else 0
+            referrals = row["referrals"] if row else 0
+            keyboard = [
+                [f"Main Balance (₦{main})"],
+                [f"Reward Balance (₦{reward})"],
+                [f"Earning Balance (₦{earning})"],
+                [f"Referral Balance (₦{referral})"],
+                ["⬅️ Go Back", "🏠 Main Menu"]
+            ]
+            await update.message.reply_text(
+                "💸 Which balance do you want to withdraw from?\n\n"
+                "• Main Balance: Withdraw anytime, any amount.\n"
+                "• Reward Balance: Withdraw anytime, any amount **after 10 referrals**.\n"
+                "• Earning Balance: Withdraw only if you have **10 referrals** and minimum ₦45,000.\n"
+                "• Referral Balance: Withdraw only if you have **10 referrals** and minimum ₦20,000.",
+                reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+            )
+            context.user_data["withdraw_state"] = CHOOSE_BALANCE
+            context.user_data["withdraw"] = {
+                "referrals": referrals,
+                "main": main,
+                "reward": reward,
+                "earning": earning,
+                "referral": referral
+            }
+            return
+
+    elif context.user_data.get("withdraw_state") == "add_bank_name":
+        if text == "⬅️ Go Back" or text == "🏠 Main Menu":
+            await update.message.reply_text("🔙 Back to main menu.", reply_markup=get_main_keyboard(user_id))
+            context.user_data["withdraw_state"] = None
+            return
+        context.user_data["new_bank"] = {"bank_name": text}
+        await update.message.reply_text("🔢 Enter your Account Number:", reply_markup=get_go_back_keyboard())
+        context.user_data["withdraw_state"] = "add_account_number"
+        return
+
+    elif context.user_data.get("withdraw_state") == "add_account_number":
+        if text == "⬅️ Go Back" or text == "🏠 Main Menu":
+            await update.message.reply_text("🔙 Back to main menu.", reply_markup=get_main_keyboard(user_id))
+            context.user_data["withdraw_state"] = None
+            return
+        context.user_data["new_bank"]["account_number"] = text
+        await update.message.reply_text("👤 Enter your Account Name:", reply_markup=get_go_back_keyboard())
+        context.user_data["withdraw_state"] = "add_account_name"
+        return
+
+    elif context.user_data.get("withdraw_state") == "add_account_name":
+        if text == "⬅️ Go Back" or text == "🏠 Main Menu":
+            await update.message.reply_text("🔙 Back to main menu.", reply_markup=get_main_keyboard(user_id))
+            context.user_data["withdraw_state"] = None
+            return
+        context.user_data["new_bank"]["account_name"] = text
+        # Save new bank account
+        conn = await asyncpg.connect(POSTGRES_URL)
+        count = await conn.fetchval("SELECT COUNT(*) FROM user_banks WHERE user_id = $1", user_id)
+        if count >= 2:
+            await conn.close()
+            await update.message.reply_text("❌ You can only save up to 2 bank accounts.", reply_markup=get_main_keyboard(user_id))
+            context.user_data["withdraw_state"] = None
+            return
+        await conn.execute(
+            "INSERT INTO user_banks (user_id, bank_name, account_number, account_name) VALUES ($1, $2, $3, $4)",
+            user_id,
+            context.user_data["new_bank"]["bank_name"],
+            context.user_data["new_bank"]["account_number"],
+            context.user_data["new_bank"]["account_name"]
+        )
+        await conn.close()
+        await update.message.reply_text("✅ Bank account added!", reply_markup=get_main_keyboard(user_id))
+        context.user_data["withdraw_state"] = None
         return
 
     elif context.user_data.get("withdraw_state") == CHOOSE_BALANCE:
+        if text == "⬅️ Go Back" or text == "🏠 Main Menu":
+            await update.message.reply_text("🔙 Back to main menu.", reply_markup=get_main_keyboard(user_id))
+            context.user_data["withdraw_state"] = None
+            return
         balance_map = {
             "Main Balance": "main_balance",
             "Reward Balance": "reward_balance",
@@ -457,36 +542,41 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["withdraw"]["balance_label"] = key
                 break
         else:
-            await update.message.reply_text("❌ Please select a valid balance option.")
+            await update.message.reply_text("❌ Please select a valid balance option.", reply_markup=get_go_back_keyboard())
             return
 
         # Show criteria prompt
         if context.user_data["withdraw"]["balance_label"] == "Main Balance":
-            await update.message.reply_text("✅ You can withdraw any amount from your Main Balance at any time.")
+            await update.message.reply_text("✅ You can withdraw any amount from your Main Balance at any time.", reply_markup=get_go_back_keyboard())
         elif context.user_data["withdraw"]["balance_label"] == "Reward Balance":
             await update.message.reply_text(
-                "ℹ️ You can only withdraw from Reward Balance after referring 10 people."
+                "ℹ️ You can only withdraw from Reward Balance after referring 10 people.", reply_markup=get_go_back_keyboard()
             )
         elif context.user_data["withdraw"]["balance_label"] == "Earning Balance":
             await update.message.reply_text(
-                "ℹ️ You can only withdraw from Earning Balance after referring 10 people and the minimum withdrawal is ₦45,000."
+                "ℹ️ You can only withdraw from Earning Balance after referring 10 people and the minimum withdrawal is ₦45,000.", reply_markup=get_go_back_keyboard()
             )
         elif context.user_data["withdraw"]["balance_label"] == "Referral Balance":
             await update.message.reply_text(
-                "ℹ️ You can only withdraw from Referral Balance after referring 10 people and the minimum withdrawal is ₦20,000."
+                "ℹ️ You can only withdraw from Referral Balance after referring 10 people and the minimum withdrawal is ₦20,000.", reply_markup=get_go_back_keyboard()
             )
 
         await update.message.reply_text(
-            f"Enter the amount you want to withdraw from your {context.user_data['withdraw']['balance_label']}:"
+            f"Enter the amount you want to withdraw from your {context.user_data['withdraw']['balance_label']}:",
+            reply_markup=get_go_back_keyboard()
         )
         context.user_data["withdraw_state"] = ASK_WITHDRAW_AMOUNT
         return
 
     elif context.user_data.get("withdraw_state") == ASK_WITHDRAW_AMOUNT:
+        if text == "⬅️ Go Back" or text == "🏠 Main Menu":
+            await update.message.reply_text("🔙 Back to main menu.", reply_markup=get_main_keyboard(user_id))
+            context.user_data["withdraw_state"] = None
+            return
         try:
             amount = int(text)
         except ValueError:
-            await update.message.reply_text("❌ Please enter a valid amount.")
+            await update.message.reply_text("❌ Please enter a valid amount.", reply_markup=get_go_back_keyboard())
             return
 
         details = context.user_data["withdraw"]
@@ -500,51 +590,87 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Criteria checks
         if balance_type == "reward_balance" and referrals < 10:
-            await update.message.reply_text("❌ You need at least 10 referrals to withdraw from Reward Balance.")
+            await update.message.reply_text("❌ You need at least 10 referrals to withdraw from Reward Balance.", reply_markup=get_go_back_keyboard())
             return
         if balance_type == "earning_balance":
             if referrals < 10:
-                await update.message.reply_text("❌ You need at least 10 referrals to withdraw from Earning Balance.")
+                await update.message.reply_text("❌ You need at least 10 referrals to withdraw from Earning Balance.", reply_markup=get_go_back_keyboard())
                 return
             if amount < 45000:
-                await update.message.reply_text("❌ Minimum withdrawal from Earning Balance is ₦45,000.")
+                await update.message.reply_text("❌ Minimum withdrawal from Earning Balance is ₦45,000.", reply_markup=get_go_back_keyboard())
                 return
         if balance_type == "referral_balance":
             if referrals < 10:
-                await update.message.reply_text("❌ You need at least 10 referrals to withdraw from Referral Balance.")
+                await update.message.reply_text("❌ You need at least 10 referrals to withdraw from Referral Balance.", reply_markup=get_go_back_keyboard())
                 return
             if amount < 20000:
-                await update.message.reply_text("❌ Minimum withdrawal from Referral Balance is ₦20,000.")
+                await update.message.reply_text("❌ Minimum withdrawal from Referral Balance is ₦20,000.", reply_markup=get_go_back_keyboard())
                 return
 
         # Check sufficient balance
         if balance_type == "main_balance" and amount > main:
-            await update.message.reply_text("❌ Insufficient Main Balance.")
+            await update.message.reply_text("❌ Insufficient Main Balance.", reply_markup=get_go_back_keyboard())
             return
         if balance_type == "reward_balance" and amount > reward:
-            await update.message.reply_text("❌ Insufficient Reward Balance.")
+            await update.message.reply_text("❌ Insufficient Reward Balance.", reply_markup=get_go_back_keyboard())
             return
         if balance_type == "earning_balance" and amount > earning:
-            await update.message.reply_text("❌ Insufficient Earning Balance.")
+            await update.message.reply_text("❌ Insufficient Earning Balance.", reply_markup=get_go_back_keyboard())
             return
         if balance_type == "referral_balance" and amount > referral:
-            await update.message.reply_text("❌ Insufficient Referral Balance.")
+            await update.message.reply_text("❌ Insufficient Referral Balance.", reply_markup=get_go_back_keyboard())
             return
 
+        # Show account selection again for confirmation
+        conn = await asyncpg.connect(POSTGRES_URL)
+        banks = await conn.fetch("SELECT id, bank_name, account_number, account_name FROM user_banks WHERE user_id = $1", user_id)
+        await conn.close()
+        keyboard = []
+        for bank in banks:
+            keyboard.append([f"{bank['bank_name']} | {bank['account_number']} | {bank['account_name']}"])
+        keyboard.append(["⬅️ Go Back", "🏠 Main Menu"])
+        await update.message.reply_text(
+            "✅ Requirements met!\nSelect the account to receive your withdrawal:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        context.user_data["withdraw_state"] = "final_account_select"
+        context.user_data["withdraw"]["amount"] = amount
+        return
+
+    elif context.user_data.get("withdraw_state") == "final_account_select":
+        if text == "⬅️ Go Back" or text == "🏠 Main Menu":
+            await update.message.reply_text("🔙 Back to main menu.", reply_markup=get_main_keyboard(user_id))
+            context.user_data["withdraw_state"] = None
+            return
+        # Confirm selected account
+        conn = await asyncpg.connect(POSTGRES_URL)
+        bank = await conn.fetchrow(
+            "SELECT * FROM user_banks WHERE user_id = $1 AND CONCAT(bank_name, ' | ', account_number, ' | ', account_name) = $2",
+            user_id, text
+        )
+        await conn.close()
+        if not bank:
+            await update.message.reply_text("❌ Invalid selection. Please try again.", reply_markup=get_go_back_keyboard())
+            return
+        details = context.user_data["withdraw"]
+        amount = details["amount"]
+        balance_type = details["balance_type"]
+        balance_label = details["balance_label"]
+        referrals = details["referrals"]
         # Save withdrawal request to DB
         conn = await asyncpg.connect(POSTGRES_URL)
         await conn.execute(
             "INSERT INTO withdrawals (user_id, bank_name, account_number, account_name, balance_type, amount) VALUES ($1, $2, $3, $4, $5, $6)",
-            user_id, details['bank_name'], details['account_number'], details['account_name'], balance_type, amount
+            user_id, bank['bank_name'], bank['account_number'], bank['account_name'], balance_type, amount
         )
         await conn.close()
 
         # Notify user
         await update.message.reply_text(
             f"✅ Withdrawal Request:\n"
-            f"Bank: {details['bank_name']}\n"
-            f"Account Number: {details['account_number']}\n"
-            f"Account Name: {details['account_name']}\n"
+            f"Bank: {bank['bank_name']}\n"
+            f"Account Number: {bank['account_number']}\n"
+            f"Account Name: {bank['account_name']}\n"
             f"Balance: {balance_label}\n"
             f"Amount: ₦{amount}\n\n"
             "Your request has been received. An admin will process it soon.",
@@ -555,14 +681,13 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         admin_msg = (
             f"💸 New Withdrawal Request\n"
             f"User ID: {user_id}\n"
-            f"Bank: {details['bank_name']}\n"
-            f"Account Number: {details['account_number']}\n"
-            f"Account Name: {details['account_name']}\n"
+            f"Bank: {bank['bank_name']}\n"
+            f"Account Number: {bank['account_number']}\n"
+            f"Account Name: {bank['account_name']}\n"
             f"Balance: {balance_label}\n"
-            f"Amount: ₦{amount}\n"
-            f"Referrals: {referrals}"
+            f"Amount: ₦{amount}\n\n"
+            "Your request has been received. An admin will process it soon."
         )
-        await context.bot.send_message(ADMIN_ID, admin_msg)
 
         context.user_data["withdraw_state"] = None
         context.user_data["withdraw"] = {}
