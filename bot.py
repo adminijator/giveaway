@@ -16,7 +16,7 @@ from telegram.ext import (
 # Configuration
 # ======================
 
-BOT_TOKEN = "7646819105:AAERXen40fWzICdU9Sibsvd4Th9ik_5AE3c"
+BOT_TOKEN = "7646819105:AAHMBAwR7SSA5zCnjpiOqHuc5bqIVYfX9xc"
 ADMIN_ID = 6784563936  # Replace with your actual Telegram user ID
 
 CHANNEL_USERNAME = "@cashearnify"
