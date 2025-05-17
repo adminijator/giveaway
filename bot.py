@@ -1104,10 +1104,15 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Main Entry
 # ======================
 
-async def main():
-    global db_pool
-    db_pool = await asyncpg.create_pool(POSTGRES_URL)
-    await init_db()
+if __name__ == "__main__":
+    import nest_asyncio
+    import asyncio
+    nest_asyncio.apply()
+
+    # Setup DB and app
+    loop = asyncio.get_event_loop()
+    db_pool = loop.run_until_complete(asyncpg.create_pool(POSTGRES_URL))
+    loop.run_until_complete(init_db())
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -1140,10 +1145,3 @@ async def main():
 
     print("✅ Bot is running...")
     app.run_polling(close_loop=False)
-
-if __name__ == "__main__":
-    import nest_asyncio
-    import asyncio
-    nest_asyncio.apply()
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
