@@ -9,21 +9,23 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     ContextTypes, filters, ConversationHandler
 )
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 # ======================
 # Configuration
 # ======================
 
-BOT_TOKEN = "7646819105:AAHMBAwR7SSA5zCnjpiOqHuc5bqIVYfX9xc"
-ADMIN_ID = 6784563936  # Replace with your actual Telegram user ID
-
-CHANNEL_USERNAME = "@cashearnify"
-GROUP_USERNAME = "@homeofupdatez"
-
-POSTGRES_URL = "postgresql://giveaway_bot_user:ViuIAmXCDCg2wG0mfRSuTVMXPkiGfaiM@dpg-d0ju8o7fte5s7386gtrg-a/giveaway_bot"
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "6784563936"))
+POSTGRES_URL = os.environ.get("POSTGRES_URL")
 
 ASK_NAME, ASK_EMAIL, ASK_ACCOUNT, CHANGE_NAME, CHANGE_EMAIL = range(5)
 ASK_BANK_NAME, ASK_ACCOUNT_NUMBER, ASK_ACCOUNT_NAME, CHOOSE_BALANCE, ASK_WITHDRAW_AMOUNT = range(100, 105)
+
+CHANNEL_USERNAME = "@cashearnify"
+GROUP_USERNAME = "@homeofupdatez"
 
 # ======================
 # Logging
@@ -38,85 +40,84 @@ logging.basicConfig(
 # Database Setup
 # ======================
 
+db_pool = None  # Global variable for the connection pool
+
 async def init_db():
-    conn = await asyncpg.connect(POSTGRES_URL)
-    await conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            user_id BIGINT PRIMARY KEY,
-            referrals INTEGER DEFAULT 0,
-            balance INTEGER DEFAULT 0,
-            completed_tasks INTEGER DEFAULT 0,
-            name TEXT,
-            email TEXT,
-            gender TEXT,
-            change_count INTEGER DEFAULT 0,
-            last_daily_claim BIGINT DEFAULT 0,
-            main_balance INTEGER DEFAULT 0,
-            reward_balance INTEGER DEFAULT 0,
-            earning_balance INTEGER DEFAULT 0,
-            referral_balance INTEGER DEFAULT 0
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                referrals INTEGER DEFAULT 0,
+                balance INTEGER DEFAULT 0,
+                completed_tasks INTEGER DEFAULT 0,
+                name TEXT,
+                email TEXT,
+                gender TEXT,
+                change_count INTEGER DEFAULT 0,
+                last_daily_claim BIGINT DEFAULT 0,
+                main_balance INTEGER DEFAULT 0,
+                reward_balance INTEGER DEFAULT 0,
+                earning_balance INTEGER DEFAULT 0,
+                referral_balance INTEGER DEFAULT 0
+            )
+            """
         )
-        """
-    )
-    await conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS user_tasks (
-            user_id BIGINT,
-            task_name TEXT,
-            PRIMARY KEY (user_id, task_name)
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_tasks (
+                user_id BIGINT,
+                task_name TEXT,
+                PRIMARY KEY (user_id, task_name)
+            )
+            """
         )
-        """
-    )
-    await conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS withdrawals (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT,
-            bank_name TEXT,
-            account_number TEXT,
-            account_name TEXT,
-            balance_type TEXT,
-            amount BIGINT,
-            status TEXT DEFAULT 'pending',
-            requested_at TIMESTAMP DEFAULT NOW()
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS withdrawals (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                bank_name TEXT,
+                account_number TEXT,
+                account_name TEXT,
+                balance_type TEXT,
+                amount BIGINT,
+                status TEXT DEFAULT 'pending',
+                requested_at TIMESTAMP DEFAULT NOW()
+            )
+            """
         )
-        """
-    )
-    await conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS referrals (
-            id SERIAL PRIMARY KEY,
-            referrer_id BIGINT,
-            referred_id BIGINT,
-            reward_amount INTEGER,
-            referred_at TIMESTAMP DEFAULT NOW()
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS referrals (
+                id SERIAL PRIMARY KEY,
+                referrer_id BIGINT,
+                referred_id BIGINT,
+                reward_amount INTEGER,
+                referred_at TIMESTAMP DEFAULT NOW()
+            )
+            """
         )
-        """
-    )
-    await conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS user_banks (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT,
-            bank_name TEXT,
-            account_number TEXT,
-            account_name TEXT
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_banks (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                bank_name TEXT,
+                account_number TEXT,
+                account_name TEXT
+            )
+            """
         )
-        """
-    )
-    await conn.close()
 
 async def has_completed_task(user_id, task_name):
-    conn = await asyncpg.connect(POSTGRES_URL)
-    row = await conn.fetchrow("SELECT 1 FROM user_tasks WHERE user_id = $1 AND task_name = $2", user_id, task_name)
-    await conn.close()
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT 1 FROM user_tasks WHERE user_id = $1 AND task_name = $2", user_id, task_name)
     return row is not None
 
 async def mark_task_completed(user_id, task_name):
-    conn = await asyncpg.connect(POSTGRES_URL)
-    await conn.execute("INSERT INTO user_tasks (user_id, task_name) VALUES ($1, $2) ON CONFLICT DO NOTHING", user_id, task_name)
-    await conn.close()
+    async with db_pool.acquire() as conn:
+        await conn.execute("INSERT INTO user_tasks (user_id, task_name) VALUES ($1, $2) ON CONFLICT DO NOTHING", user_id, task_name)
 
 # ======================
 # Keyboards
@@ -134,11 +135,24 @@ def get_main_keyboard(user_id=None):
 
 def get_tasks_keyboard():
     keyboard = [
-        ["🎁 Daily Login Reward"],
+        ["🆕 New User Tasks"],
+        ["🗓️ Daily Tasks"],
+        ["📈 Earning History"],
+        ["⬅️ Go Back", "🏠 Main Menu"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_new_user_tasks_keyboard():
+    keyboard = [
         ["✅ Join Channel (₦1000)"],
         ["✅ Join Group (₦1000)"],
-        ["📈 Earning History"],
-        ["🗓️ Daily Tasks"],
+        ["⬅️ Go Back", "🏠 Main Menu"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_daily_tasks_keyboard():
+    keyboard = [
+        ["🎁 Daily Login Reward"],
         ["⬅️ Go Back", "🏠 Main Menu"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -189,9 +203,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["referral_id"] = referral_id
 
     # Check if user already registered
-    conn = await asyncpg.connect(POSTGRES_URL)
-    row = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", user_id)
-    await conn.close()
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", user_id)
 
     if not row or not row["name"]:
         await update.message.reply_text("✅ Welcome! Please enter your full name to begin registration:")
@@ -230,28 +243,27 @@ async def ask_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     earning_balance = 0
     referral_balance = 0
     bonus_msg = ""
-    conn = await asyncpg.connect(POSTGRES_URL)
-    # If joined with a valid referral
-    if referral_id and referral_id != user_id:
-        ref_exists = await conn.fetchrow("SELECT 1 FROM users WHERE user_id = $1", referral_id)
-        if ref_exists:
-            # Give referrer 500 to referral_balance
-            await conn.execute("UPDATE users SET referrals = referrals + 1, referral_balance = referral_balance + 500 WHERE user_id = $1", referral_id)
-            # Give new user 1500 to referral_balance
-            referral_balance = 1500
-            # Log the referral
-            await conn.execute(
-                "INSERT INTO referrals (referrer_id, referred_id, reward_amount) VALUES ($1, $2, $3)",
-                referral_id, user_id, 500
-            )
-            bonus_msg = "\n\n🎉 You received a ₦1500 welcome bonus for joining with a referral!"
-    await conn.execute(
-        "INSERT INTO users (user_id, name, email, gender, completed_tasks, balance, referrals, change_count, main_balance, reward_balance, earning_balance, referral_balance) "
-        "VALUES ($1, $2, $3, $4, 0, 0, 0, 0, 0, 0, $5, $6) "
-        "ON CONFLICT (user_id) DO UPDATE SET name = $2, email = $3, gender = $4, earning_balance = $5, referral_balance = $6",
-        user_id, name, email, gender, earning_balance, referral_balance
-    )
-    await conn.close()
+    async with db_pool.acquire() as conn:
+        # If joined with a valid referral
+        if referral_id and referral_id != user_id:
+            ref_exists = await conn.fetchrow("SELECT 1 FROM users WHERE user_id = $1", referral_id)
+            if ref_exists:
+                # Give referrer 500 to referral_balance
+                await conn.execute("UPDATE users SET referrals = referrals + 1, referral_balance = referral_balance + 500 WHERE user_id = $1", referral_id)
+                # Give new user 1500 to referral_balance
+                referral_balance = 1500
+                # Log the referral
+                await conn.execute(
+                    "INSERT INTO referrals (referrer_id, referred_id, reward_amount) VALUES ($1, $2, $3)",
+                    referral_id, user_id, 500
+                )
+                bonus_msg = "\n\n🎉 You received a ₦1500 welcome bonus for joining with a referral!"
+        await conn.execute(
+            "INSERT INTO users (user_id, name, email, gender, completed_tasks, balance, referrals, change_count, main_balance, reward_balance, earning_balance, referral_balance) "
+            "VALUES ($1, $2, $3, $4, 0, 0, 0, 0, 0, 0, $5, $6) "
+            "ON CONFLICT (user_id) DO UPDATE SET name = $2, email = $3, gender = $4, earning_balance = $5, referral_balance = $6",
+            user_id, name, email, gender, earning_balance, referral_balance
+        )
 
     await update.message.reply_text(
         f"🎉 Registration complete!{bonus_msg}\n\nName: {name}\nEmail: {email}\nGender: {gender}\n\nUse the buttons below to get started.",
@@ -261,17 +273,14 @@ async def ask_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def changeinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    conn = await asyncpg.connect(POSTGRES_URL)
-    row = await conn.fetchrow("SELECT change_count FROM users WHERE user_id = $1", user_id)
-    if not row:
-        await update.message.reply_text("❌ You are not registered.")
-        await conn.close()
-        return ConversationHandler.END
-    if row["change_count"] >= 1:
-        await update.message.reply_text("❌ You can only change your name and email once.")
-        await conn.close()
-        return ConversationHandler.END
-    await conn.close()
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT change_count FROM users WHERE user_id = $1", user_id)
+        if not row:
+            await update.message.reply_text("❌ You are not registered.")
+            return ConversationHandler.END
+        if row["change_count"] >= 1:
+            await update.message.reply_text("❌ You can only change your name and email once.")
+            return ConversationHandler.END
     await update.message.reply_text("Enter your new full name:")
     return CHANGE_NAME
 
@@ -284,12 +293,11 @@ async def change_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     new_name = context.user_data["new_name"]
     new_email = update.message.text
-    conn = await asyncpg.connect(POSTGRES_URL)
-    await conn.execute(
-        "UPDATE users SET name = $1, email = $2, change_count = change_count + 1 WHERE user_id = $3",
-        new_name, new_email, user_id
-    )
-    await conn.close()
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET name = $1, email = $2, change_count = change_count + 1 WHERE user_id = $3",
+            new_name, new_email, user_id
+        )
     await update.message.reply_text("✅ Your name and email have been updated.")
     return ConversationHandler.END
 
@@ -302,12 +310,11 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get("admin_action") == "search_user":
             query = text.strip()
             context.user_data["admin_action"] = None
-            conn = await asyncpg.connect(POSTGRES_URL)
-            if query.isdigit():
-                user = await conn.fetchrow("SELECT user_id, name, email, gender, main_balance, reward_balance, earning_balance, referrals FROM users WHERE user_id = $1", int(query))
-            else:
-                user = await conn.fetchrow("SELECT user_id, name, email, gender, main_balance, reward_balance, earning_balance, referrals FROM users WHERE name ILIKE $1", f"%{query}%")
-            await conn.close()
+            async with db_pool.acquire() as conn:
+                if query.isdigit():
+                    user = await conn.fetchrow("SELECT user_id, name, email, gender, main_balance, reward_balance, earning_balance, referrals FROM users WHERE user_id = $1", int(query))
+                else:
+                    user = await conn.fetchrow("SELECT user_id, name, email, gender, main_balance, reward_balance, earning_balance, referrals FROM users WHERE name ILIKE $1", f"%{query}%")
             if user:
                 await update.message.reply_text(
                     f"👤 User Info:\nID: {user['user_id']}\nName: {user['name']}\nEmail: {user['email']}\nGender: {user['gender']}\n"
@@ -345,9 +352,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_id_to_edit = context.user_data.get("edit_balance_user")
                 balance_type = context.user_data.get("edit_balance_type")
                 col = {"main": "main_balance", "reward": "reward_balance", "earning": "earning_balance"}[balance_type]
-                conn = await asyncpg.connect(POSTGRES_URL)
-                await conn.execute(f"UPDATE users SET {col} = $1 WHERE user_id = $2", amount, user_id_to_edit)
-                await conn.close()
+                async with db_pool.acquire() as conn:
+                    await conn.execute(f"UPDATE users SET {col} = $1 WHERE user_id = $2", amount, user_id_to_edit)
                 await update.message.reply_text(f"✅ {balance_type.capitalize()} balance updated to {amount} for user {user_id_to_edit}.", reply_markup=get_admin_keyboard())
             except Exception:
                 await update.message.reply_text("❌ Invalid amount.", reply_markup=get_admin_keyboard())
@@ -359,10 +365,9 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get("admin_action") == "ban_user":
             if text.isdigit():
                 ban_id = int(text)
-                conn = await asyncpg.connect(POSTGRES_URL)
-                await conn.execute("DELETE FROM users WHERE user_id = $1", ban_id)
-                await conn.execute("DELETE FROM user_tasks WHERE user_id = $1", ban_id)
-                await conn.close()
+                async with db_pool.acquire() as conn:
+                    await conn.execute("DELETE FROM users WHERE user_id = $1", ban_id)
+                    await conn.execute("DELETE FROM user_tasks WHERE user_id = $1", ban_id)
                 await update.message.reply_text(f"🚫 User {ban_id} has been banned and removed.", reply_markup=get_admin_keyboard())
             else:
                 await update.message.reply_text("❌ Invalid user ID.", reply_markup=get_admin_keyboard())
@@ -371,9 +376,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- MAIN USER/ADMIN MENU ---
     if text == "👤 Profile":
-        conn = await asyncpg.connect(POSTGRES_URL)
-        row = await conn.fetchrow("SELECT completed_tasks, main_balance, reward_balance, earning_balance, referral_balance, name, email, gender FROM users WHERE user_id = $1", user_id)
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT completed_tasks, main_balance, reward_balance, earning_balance, referral_balance, name, email, gender FROM users WHERE user_id = $1", user_id)
         tasks = row["completed_tasks"] if row else 0
         main_balance = row["main_balance"] if row else 0
         reward_balance = row["reward_balance"] if row else 0
@@ -392,9 +396,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif text == "💰 Balance":
-        conn = await asyncpg.connect(POSTGRES_URL)
-        row = await conn.fetchrow("SELECT main_balance, reward_balance, earning_balance, referral_balance FROM users WHERE user_id = $1", user_id)
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT main_balance, reward_balance, earning_balance, referral_balance FROM users WHERE user_id = $1", user_id)
         main_balance = row["main_balance"] if row else 0
         reward_balance = row["reward_balance"] if row else 0
         earning_balance = row["earning_balance"] if row else 0
@@ -408,9 +411,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text == "🏧 Withdrawal":
         # Show user's saved bank accounts and add account option
-        conn = await asyncpg.connect(POSTGRES_URL)
-        banks = await conn.fetch("SELECT id, bank_name, account_number, account_name FROM user_banks WHERE user_id = $1", user_id)
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            banks = await conn.fetch("SELECT id, bank_name, account_number, account_name FROM user_banks WHERE user_id = $1", user_id)
         keyboard = []
         for bank in banks:
             keyboard.append([f"{bank['bank_name']} | {bank['account_number']} | {bank['account_name']}"])
@@ -435,20 +437,18 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         else:
             # User selected a bank account
-            conn = await asyncpg.connect(POSTGRES_URL)
-            bank = await conn.fetchrow(
-                "SELECT * FROM user_banks WHERE user_id = $1 AND CONCAT(bank_name, ' | ', account_number, ' | ', account_name) = $2",
-                user_id, text
-            )
-            await conn.close()
+            async with db_pool.acquire() as conn:
+                bank = await conn.fetchrow(
+                    "SELECT * FROM user_banks WHERE user_id = $1 AND CONCAT(bank_name, ' | ', account_number, ' | ', account_name) = $2",
+                    user_id, text
+                )
             if not bank:
                 await update.message.reply_text("❌ Invalid selection. Please try again.", reply_markup=get_go_back_keyboard())
                 return
             context.user_data["withdraw_bank"] = bank
             # Fetch balances and referrals
-            conn = await asyncpg.connect(POSTGRES_URL)
-            row = await conn.fetchrow("SELECT main_balance, reward_balance, earning_balance, referral_balance, referrals FROM users WHERE user_id = $1", user_id)
-            await conn.close()
+            async with db_pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT main_balance, reward_balance, earning_balance, referral_balance, referrals FROM users WHERE user_id = $1", user_id)
             main = row["main_balance"] if row else 0
             reward = row["reward_balance"] if row else 0
             earning = row["earning_balance"] if row else 0
@@ -506,21 +506,19 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data["new_bank"]["account_name"] = text
         # Save new bank account
-        conn = await asyncpg.connect(POSTGRES_URL)
-        count = await conn.fetchval("SELECT COUNT(*) FROM user_banks WHERE user_id = $1", user_id)
-        if count >= 2:
-            await conn.close()
-            await update.message.reply_text("❌ You can only save up to 2 bank accounts.", reply_markup=get_main_keyboard(user_id))
-            context.user_data["withdraw_state"] = None
-            return
-        await conn.execute(
-            "INSERT INTO user_banks (user_id, bank_name, account_number, account_name) VALUES ($1, $2, $3, $4)",
-            user_id,
-            context.user_data["new_bank"]["bank_name"],
-            context.user_data["new_bank"]["account_number"],
-            context.user_data["new_bank"]["account_name"]
-        )
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            count = await conn.fetchval("SELECT COUNT(*) FROM user_banks WHERE user_id = $1", user_id)
+            if count >= 2:
+                await update.message.reply_text("❌ You can only save up to 2 bank accounts.", reply_markup=get_main_keyboard(user_id))
+                context.user_data["withdraw_state"] = None
+                return
+            await conn.execute(
+                "INSERT INTO user_banks (user_id, bank_name, account_number, account_name) VALUES ($1, $2, $3, $4)",
+                user_id,
+                context.user_data["new_bank"]["bank_name"],
+                context.user_data["new_bank"]["account_number"],
+                context.user_data["new_bank"]["account_name"]
+            )
         await update.message.reply_text("✅ Bank account added!", reply_markup=get_main_keyboard(user_id))
         context.user_data["withdraw_state"] = None
         return
@@ -610,6 +608,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check sufficient balance
         if balance_type == "main_balance" and amount > main:
             await update.message.reply_text("❌ Insufficient Main Balance.", reply_markup=get_go_back_keyboard())
+            context.user_data["withdraw_state"] = None
             return
         if balance_type == "reward_balance" and amount > reward:
             await update.message.reply_text("❌ Insufficient Reward Balance.", reply_markup=get_go_back_keyboard())
@@ -622,9 +621,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Show account selection again for confirmation
-        conn = await asyncpg.connect(POSTGRES_URL)
-        banks = await conn.fetch("SELECT id, bank_name, account_number, account_name FROM user_banks WHERE user_id = $1", user_id)
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            banks = await conn.fetch("SELECT id, bank_name, account_number, account_name FROM user_banks WHERE user_id = $1", user_id)
         keyboard = []
         for bank in banks:
             keyboard.append([f"{bank['bank_name']} | {bank['account_number']} | {bank['account_name']}"])
@@ -643,12 +641,11 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["withdraw_state"] = None
             return
         # Confirm selected account
-        conn = await asyncpg.connect(POSTGRES_URL)
-        bank = await conn.fetchrow(
-            "SELECT * FROM user_banks WHERE user_id = $1 AND CONCAT(bank_name, ' | ', account_number, ' | ', account_name) = $2",
-            user_id, text
-        )
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            bank = await conn.fetchrow(
+                "SELECT * FROM user_banks WHERE user_id = $1 AND CONCAT(bank_name, ' | ', account_number, ' | ', account_name) = $2",
+                user_id, text
+            )
         if not bank:
             await update.message.reply_text("❌ Invalid selection. Please try again.", reply_markup=get_go_back_keyboard())
             return
@@ -658,12 +655,11 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         balance_label = details["balance_label"]
         referrals = details["referrals"]
         # Save withdrawal request to DB
-        conn = await asyncpg.connect(POSTGRES_URL)
-        await conn.execute(
-            "INSERT INTO withdrawals (user_id, bank_name, account_number, account_name, balance_type, amount) VALUES ($1, $2, $3, $4, $5, $6)",
-            user_id, bank['bank_name'], bank['account_number'], bank['account_name'], balance_type, amount
-        )
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO withdrawals (user_id, bank_name, account_number, account_name, balance_type, amount) VALUES ($1, $2, $3, $4, $5, $6)",
+                user_id, bank['bank_name'], bank['account_number'], bank['account_name'], balance_type, amount
+            )
 
         # Notify user
         await update.message.reply_text(
@@ -678,8 +674,10 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         # Notify admin
+        user = update.effective_user
         admin_msg = (
             f"💸 New Withdrawal Request\n"
+            f"User: {user.full_name} (@{user.username})\n"
             f"User ID: {user_id}\n"
             f"Bank: {bank['bank_name']}\n"
             f"Account Number: {bank['account_number']}\n"
@@ -688,6 +686,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Amount: ₦{amount}\n\n"
             "Your request has been received. An admin will process it soon."
         )
+        await context.bot.send_message(ADMIN_ID, admin_msg)
 
         context.user_data["withdraw_state"] = None
         context.user_data["withdraw"] = {}
@@ -695,9 +694,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- MAIN USER/ADMIN MENU ---
     elif text == "👤 Profile":
-        conn = await asyncpg.connect(POSTGRES_URL)
-        row = await conn.fetchrow("SELECT completed_tasks, main_balance, reward_balance, earning_balance, referral_balance, name, email, gender FROM users WHERE user_id = $1", user_id)
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT completed_tasks, main_balance, reward_balance, earning_balance, referral_balance, name, email, gender FROM users WHERE user_id = $1", user_id)
         tasks = row["completed_tasks"] if row else 0
         main_balance = row["main_balance"] if row else 0
         reward_balance = row["reward_balance"] if row else 0
@@ -715,41 +713,29 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👥 Referral Balance: {referral_balance}"
         )
 
-    elif text == "📝 Tasks":
-        await update.message.reply_text(
-            "📝 Available Tasks:\n"
-            "🎁 Daily Login Reward (₦100)\n"
-            f"✅ Join our Telegram channel: {CHANNEL_USERNAME} (₦1000)\n"
-            f"✅ Join our Telegram group: {GROUP_USERNAME} (₦1000)\n"
-            "📈 Earning History\n"
-            "🗓️ Daily Tasks (updated every day)\n\n"
-            "Press a button below after completing a task to claim your reward.",
-            reply_markup=get_tasks_keyboard()
-        )
-
     elif text == "💰 Balance":
-        conn = await asyncpg.connect(POSTGRES_URL)
-        row = await conn.fetchrow("SELECT main_balance, reward_balance, earning_balance FROM users WHERE user_id = $1", user_id)
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT main_balance, reward_balance, earning_balance, referral_balance FROM users WHERE user_id = $1", user_id)
         main_balance = row["main_balance"] if row else 0
         reward_balance = row["reward_balance"] if row else 0
         earning_balance = row["earning_balance"] if row else 0
+        referral_balance = row["referral_balance"] if row else 0
         await update.message.reply_text(
             f"💰 Main Balance: {main_balance}\n"
             f"🎁 Reward Balance: {reward_balance}\n"
-            f"🪙 Earning Balance: {earning_balance}"
+            f"🪙 Earning Balance: {earning_balance}\n"
+            f"👥 Referral Balance: {referral_balance}"
         )
 
     elif text == "🔗 Referrals":
-        conn = await asyncpg.connect(POSTGRES_URL)
-        row = await conn.fetchrow("SELECT referrals FROM users WHERE user_id = $1", user_id)
-        referrals_count = row["referrals"] if row else 0
-        bot_username = (await context.bot.get_me()).username
-        referral_link = f"https://t.me/{bot_username}?start={user_id}"
-        referred_rows = await conn.fetch(
-            "SELECT referred_id, reward_amount, referred_at FROM referrals WHERE referrer_id = $1", user_id
-        )
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT referrals FROM users WHERE user_id = $1", user_id)
+            referrals_count = row["referrals"] if row else 0
+            bot_username = (await context.bot.get_me()).username
+            referral_link = f"https://t.me/{bot_username}?start={user_id}"
+            referred_rows = await conn.fetch(
+                "SELECT referred_id, reward_amount, referred_at FROM referrals WHERE referrer_id = $1", user_id
+            )
         if referred_rows:
             referred_list = "\n".join(
                 [f"• {r['referred_id']} | ₦{r['reward_amount']} | {r['referred_at'].strftime('%Y-%m-%d')}" for r in referred_rows]
@@ -763,54 +749,24 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{referred_text}"
         )
 
-    elif text == "🏧 Withdrawal":
-        await update.message.reply_text("🏧 Withdrawal options coming soon!")
-
-    elif text == "📈 Earning History":
-        conn = await asyncpg.connect(POSTGRES_URL)
-        row = await conn.fetchrow("SELECT completed_tasks, earning_balance FROM users WHERE user_id = $1", user_id)
-        await conn.close()
-        tasks = row["completed_tasks"] if row else 0
-        earning_balance = row["earning_balance"] if row else 0
+    elif text == "📝 Tasks":
         await update.message.reply_text(
-            f"📈 Earning History:\n"
-            f"Tasks Completed: {tasks}\n"
-            f"Total Earned: {earning_balance} coins"
+            "📝 Tasks Menu:",
+            reply_markup=get_tasks_keyboard()
         )
 
-    elif text == "🎁 Daily Login Reward":
-        now = int(time.time())
-        conn = await asyncpg.connect(POSTGRES_URL)
-        row = await conn.fetchrow("SELECT last_daily_claim, referrals FROM users WHERE user_id = $1", user_id)
-        last_claim = row["last_daily_claim"] if row else 0
-        referrals = row["referrals"] if row else 0
-        reward = 100 + (referrals * 50)
-        if now - last_claim >= 86400:  # 24 hours
-            await conn.execute(
-                "UPDATE users SET earning_balance = earning_balance + $1, last_daily_claim = $2 WHERE user_id = $3",
-                reward, now, user_id
+    elif text == "🆕 New User Tasks":
+        await update.message.reply_text(
+            "🆕 Complete these tasks to get started:",
+            reply_markup=get_new_user_tasks_keyboard()
         )
-            await conn.close()
-            await update.message.reply_text(
-                f"🎉 Daily login reward claimed!\n"
-                f"Reward: ₦{reward}\n"
-                f"Come back in 24 hours for your next reward.",
-                reply_markup=get_main_keyboard(user_id)
-            )
-        else:
-            await conn.close()
-            next_claim = last_claim + 86400
-            wait_time = max(0, next_claim - now)
-            hours = wait_time // 3600
-            minutes = (wait_time % 3600) // 60
-            await update.message.reply_text(
-                f"⏳ You have already claimed your daily reward.\n"
-                f"Come back in {hours}h {minutes}m.",
-                reply_markup=get_main_keyboard(user_id)
-        )
+
     elif text == "✅ Join Channel (₦1000)":
         if await has_completed_task(user_id, "joined_channel"):
-            await update.message.reply_text("✅ You have already claimed this reward.", reply_markup=get_main_keyboard(user_id))
+            await update.message.reply_text(
+                "✅ You have already claimed this reward.",
+                reply_markup=get_new_user_tasks_keyboard()
+            )
         else:
             # Validate channel join
             try:
@@ -818,20 +774,28 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if member.status not in ["member", "administrator", "creator"]:
                     raise Exception()
             except Exception:
-                await update.message.reply_text(f"❌ You must join the channel {CHANNEL_USERNAME} to claim this reward.", reply_markup=get_main_keyboard(user_id))
+                await update.message.reply_text(
+                    f"❌ You must join the channel {CHANNEL_USERNAME} to claim this reward.",
+                    reply_markup=get_new_user_tasks_keyboard()
+                )
                 return
-            conn = await asyncpg.connect(POSTGRES_URL)
-            await conn.execute(
-                "UPDATE users SET completed_tasks = completed_tasks + 1, earning_balance = earning_balance + 1000 WHERE user_id = $1",
-                user_id
-            )
-            await conn.close()
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE users SET completed_tasks = completed_tasks + 1, earning_balance = earning_balance + 1000 WHERE user_id = $1",
+                    user_id
+                )
             await mark_task_completed(user_id, "joined_channel")
-            await update.message.reply_text("🎉 Task completed!\n🪙 You earned ₦1000 for joining our channel.", reply_markup=get_main_keyboard(user_id))
+            await update.message.reply_text(
+                "🎉 Task completed!\n🪙 You earned ₦1000 for joining our channel.",
+                reply_markup=get_new_user_tasks_keyboard()
+            )
 
     elif text == "✅ Join Group (₦1000)":
         if await has_completed_task(user_id, "joined_group"):
-            await update.message.reply_text("✅ You have already claimed this reward.", reply_markup=get_main_keyboard(user_id))
+            await update.message.reply_text(
+                "✅ You have already claimed this reward.",
+                reply_markup=get_new_user_tasks_keyboard()
+            )
         else:
             # Validate group join
             try:
@@ -839,26 +803,80 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if member.status not in ["member", "administrator", "creator"]:
                     raise Exception()
             except Exception:
-                await update.message.reply_text(f"❌ You must join the group {GROUP_USERNAME} to claim this reward.", reply_markup=get_main_keyboard(user_id))
+                await update.message.reply_text(
+                    f"❌ You must join the group {GROUP_USERNAME} to claim this reward.",
+                    reply_markup=get_new_user_tasks_keyboard()
+                )
                 return
-            conn = await asyncpg.connect(POSTGRES_URL)
-            await conn.execute(
-                "UPDATE users SET completed_tasks = completed_tasks + 1, earning_balance = earning_balance + 1000 WHERE user_id = $1",
-                user_id
-            )
-            await conn.close()
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE users SET completed_tasks = completed_tasks + 1, earning_balance = earning_balance + 1000 WHERE user_id = $1",
+                    user_id
+                )
             await mark_task_completed(user_id, "joined_group")
-            await update.message.reply_text("🎉 Task completed!\n🪙 You earned ₦1000 for joining our group.", reply_markup=get_main_keyboard(user_id))
+            await update.message.reply_text(
+                "🎉 Task completed!\n🪙 You earned ₦1000 for joining our group.",
+                reply_markup=get_new_user_tasks_keyboard()
+            )
 
     elif text == "🗓️ Daily Tasks":
         await update.message.reply_text(
-            "🗓️ Here are today's special daily tasks:\n"
-            "👉 [Update this section daily with your new tasks!]",
-            reply_markup=get_tasks_keyboard()
+            "🗓️ Daily Tasks Menu:",
+            reply_markup=get_daily_tasks_keyboard()
         )
 
-    elif text == "⬅️ Back":
-        await update.message.reply_text("🔙 Back to main menu.", reply_markup=get_main_keyboard(user_id))
+    elif text == "🎁 Daily Login Reward":
+        now = int(time.time())
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT last_daily_claim, referrals FROM users WHERE user_id = $1", user_id)
+            last_claim = row["last_daily_claim"] if row else 0
+            referrals = row["referrals"] if row else 0
+            reward = 100 + (referrals * 50)
+            if now - last_claim >= 86400:  # 24 hours
+                await conn.execute(
+                    "UPDATE users SET earning_balance = earning_balance + $1, last_daily_claim = $2 WHERE user_id = $3",
+                    reward, now, user_id
+                )
+                await update.message.reply_text(
+                    f"🎉 Daily login reward claimed!\n"
+                    f"Reward: ₦{reward}\n"
+                    f"Come back in 24 hours for your next reward.",
+                    reply_markup=get_daily_tasks_keyboard()
+                )
+            else:
+                next_claim = last_claim + 86400
+                wait_time = max(0, next_claim - now)
+                hours = wait_time // 3600
+                minutes = (wait_time % 3600) // 60
+                await update.message.reply_text(
+                    f"⏳ You have already claimed your daily reward.\n"
+                    f"Come back in {hours}h {minutes}m.",
+                    reply_markup=get_daily_tasks_keyboard()
+                )
+
+    elif text == "📈 Earning History":
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT completed_tasks, earning_balance FROM users WHERE user_id = $1", user_id)
+        tasks = row["completed_tasks"] if row else 0
+        earning_balance = row["earning_balance"] if row else 0
+        await update.message.reply_text(
+            f"📈 Earning History:\n"
+            f"Tasks Completed: {tasks}\n"
+            f"Total Earned: {earning_balance} coins",
+            reply_markup=get_go_back_keyboard()
+        )
+
+    elif text == "⬅️ Go Back":
+        await update.message.reply_text(
+            "🔙 Back to main menu.",
+            reply_markup=get_main_keyboard(user_id)
+        )
+
+    elif text == "🏠 Main Menu":
+        await update.message.reply_text(
+            "🏠 Main Menu",
+            reply_markup=get_main_keyboard(user_id)
+        )
 
     elif text == "🛠️ Admin Panel":
         await admin_panel(update, context)
@@ -867,10 +885,9 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id != ADMIN_ID:
             await update.message.reply_text("⛔ You are not authorized.")
             return
-        conn = await asyncpg.connect(POSTGRES_URL)
-        user_count = await conn.fetchval("SELECT COUNT(*) FROM users")
-        sums = await conn.fetchrow("SELECT SUM(main_balance) AS main, SUM(reward_balance) AS reward, SUM(earning_balance) AS earning FROM users")
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            user_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+            sums = await conn.fetchrow("SELECT SUM(main_balance) AS main, SUM(reward_balance) AS reward, SUM(earning_balance) AS earning FROM users")
         await update.message.reply_text(
             f"👥 Total users: {user_count}\n"
             f"💰 Main: {sums['main'] or 0} | Reward: {sums['reward'] or 0} | Earning: {sums['earning'] or 0}",
@@ -889,9 +906,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             broadcast_message = text
             context.user_data["broadcast"] = False
             sent = 0
-            conn = await asyncpg.connect(POSTGRES_URL)
-            rows = await conn.fetch("SELECT user_id FROM users")
-            await conn.close()
+            async with db_pool.acquire() as conn:
+                rows = await conn.fetch("SELECT user_id FROM users")
             for row in rows:
                 try:
                     await context.bot.send_message(row["user_id"], broadcast_message)
@@ -959,9 +975,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Export all users
-        conn = await asyncpg.connect(POSTGRES_URL)
-        users = await conn.fetch(query)
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            users = await conn.fetch(query)
         output = StringIO()
         writer = csv.writer(output)
         writer.writerow(["user_id", "name", "email", "gender", "main_balance", "reward_balance", "earning_balance", "referrals"])
@@ -982,9 +997,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Please enter a valid number.", reply_markup=get_export_keyboard())
             return
         query = "SELECT user_id, name, email, gender, main_balance, reward_balance, earning_balance, referrals FROM users WHERE earning_balance >= $1"
-        conn = await asyncpg.connect(POSTGRES_URL)
-        users = await conn.fetch(query, min_balance)
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            users = await conn.fetch(query, min_balance)
         caption = f"📤 Exported users with earning balance ≥ {min_balance}"
         output = StringIO()
         writer = csv.writer(output)
@@ -1005,9 +1019,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Please enter Male, Female, or Other.", reply_markup=get_export_keyboard())
             return
         query = "SELECT user_id, name, email, gender, main_balance, reward_balance, earning_balance, referrals FROM users WHERE gender = $1"
-        conn = await asyncpg.connect(POSTGRES_URL)
-        users = await conn.fetch(query, gender)
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            users = await conn.fetch(query, gender)
         caption = f"📤 Exported users with gender: {gender}"
         output = StringIO()
         writer = csv.writer(output)
@@ -1029,9 +1042,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Please enter a valid number.", reply_markup=get_export_keyboard())
             return
         query = "SELECT user_id, name, email, gender, main_balance, reward_balance, earning_balance, referrals FROM users WHERE referrals >= $1"
-        conn = await asyncpg.connect(POSTGRES_URL)
-        users = await conn.fetch(query, min_ref)
-        await conn.close()
+        async with db_pool.acquire() as conn:
+            users = await conn.fetch(query, min_ref)
         caption = f"📤 Exported users with referrals ≥ {min_ref}"
         output = StringIO()
         writer = csv.writer(output)
@@ -1060,11 +1072,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text == "🛎️ Services":
         await update.message.reply_text(
-            "🛎️ Our Services:\n"
-            "- Service 1\n"
-            "- Service 2\n"
-            "- Service 3\n"
-            "Contact admin for more info."
+            "🛎️ Services coming soon!",
+            reply_markup=get_go_back_keyboard()
         )
 
 # ======================
@@ -1077,9 +1086,8 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ You are not authorized to access this command.")
         return
 
-    conn = await asyncpg.connect(POSTGRES_URL)
-    user_count = await conn.fetchval("SELECT COUNT(*) FROM users")
-    await conn.close()
+    async with db_pool.acquire() as conn:
+        user_count = await conn.fetchval("SELECT COUNT(*) FROM users")
     await update.message.reply_text(f"👥 Total registered users: {user_count}")
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1097,6 +1105,8 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================
 
 async def main():
+    global db_pool
+    db_pool = await asyncpg.create_pool(POSTGRES_URL)
     await init_db()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
