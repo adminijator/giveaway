@@ -16,7 +16,7 @@ from telegram.ext import (
 # Configuration
 # ======================
 
-BOT_TOKEN = "7646819105:AAERXen40fWzICdU9Sibsvd4Th9ik_5AE3c"
+BOT_TOKEN = "7646819105:AAHMBAwR7SSA5zCnjpiOqHuc5bqIVYfX9xc"
 ADMIN_ID = 6784563936  # Replace with your actual Telegram user ID
 
 CHANNEL_USERNAME = "@cashearnify"
@@ -25,6 +25,7 @@ GROUP_USERNAME = "@homeofupdatez"
 POSTGRES_URL = "postgresql://giveaway_bot_user:ViuIAmXCDCg2wG0mfRSuTVMXPkiGfaiM@dpg-d0ju8o7fte5s7386gtrg-a/giveaway_bot"  # <-- Set your PostgreSQL URL here
 
 ASK_NAME, ASK_EMAIL, ASK_ACCOUNT, CHANGE_NAME, CHANGE_EMAIL = range(5)
+ASK_BANK_NAME, ASK_ACCOUNT_NUMBER, ASK_ACCOUNT_NAME, CHOOSE_BALANCE, ASK_WITHDRAW_AMOUNT = range(100, 105)
 
 # ======================
 # Logging
@@ -55,7 +56,8 @@ async def init_db():
             last_daily_claim BIGINT DEFAULT 0,
             main_balance INTEGER DEFAULT 0,
             reward_balance INTEGER DEFAULT 0,
-            earning_balance INTEGER DEFAULT 0
+            earning_balance INTEGER DEFAULT 0,
+            referral_balance INTEGER DEFAULT 0
         )
         """
     )
@@ -65,6 +67,32 @@ async def init_db():
             user_id BIGINT,
             task_name TEXT,
             PRIMARY KEY (user_id, task_name)
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS withdrawals (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
+            bank_name TEXT,
+            account_number TEXT,
+            account_name TEXT,
+            balance_type TEXT,
+            amount BIGINT,
+            status TEXT DEFAULT 'pending',
+            requested_at TIMESTAMP DEFAULT NOW()
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS referrals (
+            id SERIAL PRIMARY KEY,
+            referrer_id BIGINT,
+            referred_id BIGINT,
+            reward_amount INTEGER,
+            referred_at TIMESTAMP DEFAULT NOW()
         )
         """
     )
@@ -187,22 +215,28 @@ async def ask_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     referral_id = context.user_data.get("referral_id")
 
     earning_balance = 0
+    referral_balance = 0
     bonus_msg = ""
     conn = await asyncpg.connect(POSTGRES_URL)
     # If joined with a valid referral
     if referral_id and referral_id != user_id:
         ref_exists = await conn.fetchrow("SELECT 1 FROM users WHERE user_id = $1", referral_id)
         if ref_exists:
-            # Give referrer 500
-            await conn.execute("UPDATE users SET referrals = referrals + 1, earning_balance = earning_balance + 500 WHERE user_id = $1", referral_id)
-            # Give new user 1500
-            earning_balance = 1500
+            # Give referrer 500 to referral_balance
+            await conn.execute("UPDATE users SET referrals = referrals + 1, referral_balance = referral_balance + 500 WHERE user_id = $1", referral_id)
+            # Give new user 1500 to referral_balance
+            referral_balance = 1500
+            # Log the referral
+            await conn.execute(
+                "INSERT INTO referrals (referrer_id, referred_id, reward_amount) VALUES ($1, $2, $3)",
+                referral_id, user_id, 500
+            )
             bonus_msg = "\n\n🎉 You received a ₦1500 welcome bonus for joining with a referral!"
     await conn.execute(
-        "INSERT INTO users (user_id, name, email, gender, completed_tasks, balance, referrals, change_count, main_balance, reward_balance, earning_balance) "
-        "VALUES ($1, $2, $3, $4, 0, 0, 0, 0, 0, 0, $5) "
-        "ON CONFLICT (user_id) DO UPDATE SET name = $2, email = $3, gender = $4, earning_balance = $5",
-        user_id, name, email, gender, earning_balance
+        "INSERT INTO users (user_id, name, email, gender, completed_tasks, balance, referrals, change_count, main_balance, reward_balance, earning_balance, referral_balance) "
+        "VALUES ($1, $2, $3, $4, 0, 0, 0, 0, 0, 0, $5, $6) "
+        "ON CONFLICT (user_id) DO UPDATE SET name = $2, email = $3, gender = $4, earning_balance = $5, referral_balance = $6",
+        user_id, name, email, gender, earning_balance, referral_balance
     )
     await conn.close()
 
@@ -212,7 +246,6 @@ async def ask_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# Allow users to change name/email only once
 async def changeinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = await asyncpg.connect(POSTGRES_URL)
@@ -326,12 +359,13 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- MAIN USER/ADMIN MENU ---
     if text == "👤 Profile":
         conn = await asyncpg.connect(POSTGRES_URL)
-        row = await conn.fetchrow("SELECT completed_tasks, main_balance, reward_balance, earning_balance, name, email, gender FROM users WHERE user_id = $1", user_id)
+        row = await conn.fetchrow("SELECT completed_tasks, main_balance, reward_balance, earning_balance, referral_balance, name, email, gender FROM users WHERE user_id = $1", user_id)
         await conn.close()
         tasks = row["completed_tasks"] if row else 0
         main_balance = row["main_balance"] if row else 0
         reward_balance = row["reward_balance"] if row else 0
         earning_balance = row["earning_balance"] if row else 0
+        referral_balance = row["referral_balance"] if row else 0
         name = row["name"] if row else "N/A"
         email = row["email"] if row else "N/A"
         gender = row["gender"] if row else "N/A"
@@ -340,7 +374,220 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Tasks Done: {tasks}\n"
             f"💰 Main Balance: {main_balance}\n"
             f"🎁 Reward Balance: {reward_balance}\n"
-            f"🪙 Earning Balance: {earning_balance}"
+            f"🪙 Earning Balance: {earning_balance}\n"
+            f"👥 Referral Balance: {referral_balance}"
+        )
+
+    elif text == "💰 Balance":
+        conn = await asyncpg.connect(POSTGRES_URL)
+        row = await conn.fetchrow("SELECT main_balance, reward_balance, earning_balance, referral_balance FROM users WHERE user_id = $1", user_id)
+        await conn.close()
+        main_balance = row["main_balance"] if row else 0
+        reward_balance = row["reward_balance"] if row else 0
+        earning_balance = row["earning_balance"] if row else 0
+        referral_balance = row["referral_balance"] if row else 0
+        await update.message.reply_text(
+            f"💰 Main Balance: {main_balance}\n"
+            f"🎁 Reward Balance: {reward_balance}\n"
+            f"🪙 Earning Balance: {earning_balance}\n"
+            f"👥 Referral Balance: {referral_balance}"
+        )
+
+    elif text == "🏧 Withdrawal":
+        context.user_data["withdraw"] = {}
+        await update.message.reply_text("🏦 Enter your Bank Name:")
+        context.user_data["withdraw_state"] = ASK_BANK_NAME
+        return
+
+    elif context.user_data.get("withdraw_state") == ASK_BANK_NAME:
+        context.user_data["withdraw"]["bank_name"] = text
+        await update.message.reply_text("🔢 Enter your Account Number:")
+        context.user_data["withdraw_state"] = ASK_ACCOUNT_NUMBER
+        return
+
+    elif context.user_data.get("withdraw_state") == ASK_ACCOUNT_NUMBER:
+        context.user_data["withdraw"]["account_number"] = text
+        await update.message.reply_text("👤 Enter your Account Name:")
+        context.user_data["withdraw_state"] = ASK_ACCOUNT_NAME
+        return
+
+    elif context.user_data.get("withdraw_state") == ASK_ACCOUNT_NAME:
+        context.user_data["withdraw"]["account_name"] = text
+        # Fetch balances and referrals
+        conn = await asyncpg.connect(POSTGRES_URL)
+        row = await conn.fetchrow("SELECT main_balance, reward_balance, earning_balance, referral_balance, referrals FROM users WHERE user_id = $1", user_id)
+        await conn.close()
+        main = row["main_balance"] if row else 0
+        reward = row["reward_balance"] if row else 0
+        earning = row["earning_balance"] if row else 0
+        referral = row["referral_balance"] if row else 0
+        referrals = row["referrals"] if row else 0
+        keyboard = [
+            [f"Main Balance (₦{main})"],
+            [f"Reward Balance (₦{reward})"],
+            [f"Earning Balance (₦{earning})"],
+            [f"Referral Balance (₦{referral})"]
+        ]
+        await update.message.reply_text(
+            "💸 Which balance do you want to withdraw from?\n\n"
+            "• Main Balance: Withdraw anytime, any amount.\n"
+            "• Reward Balance: Withdraw anytime, any amount **after 10 referrals**.\n"
+            "• Earning Balance: Withdraw only if you have **10 referrals** and minimum ₦45,000.\n"
+            "• Referral Balance: Withdraw only if you have **10 referrals** and minimum ₦20,000.",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        context.user_data["withdraw_state"] = CHOOSE_BALANCE
+        context.user_data["withdraw"]["referrals"] = referrals
+        context.user_data["withdraw"]["main"] = main
+        context.user_data["withdraw"]["reward"] = reward
+        context.user_data["withdraw"]["earning"] = earning
+        context.user_data["withdraw"]["referral"] = referral
+        return
+
+    elif context.user_data.get("withdraw_state") == CHOOSE_BALANCE:
+        balance_map = {
+            "Main Balance": "main_balance",
+            "Reward Balance": "reward_balance",
+            "Earning Balance": "earning_balance",
+            "Referral Balance": "referral_balance"
+        }
+        for key in balance_map:
+            if text.startswith(key):
+                context.user_data["withdraw"]["balance_type"] = balance_map[key]
+                context.user_data["withdraw"]["balance_label"] = key
+                break
+        else:
+            await update.message.reply_text("❌ Please select a valid balance option.")
+            return
+
+        # Show criteria prompt
+        if context.user_data["withdraw"]["balance_label"] == "Main Balance":
+            await update.message.reply_text("✅ You can withdraw any amount from your Main Balance at any time.")
+        elif context.user_data["withdraw"]["balance_label"] == "Reward Balance":
+            await update.message.reply_text(
+                "ℹ️ You can only withdraw from Reward Balance after referring 10 people."
+            )
+        elif context.user_data["withdraw"]["balance_label"] == "Earning Balance":
+            await update.message.reply_text(
+                "ℹ️ You can only withdraw from Earning Balance after referring 10 people and the minimum withdrawal is ₦45,000."
+            )
+        elif context.user_data["withdraw"]["balance_label"] == "Referral Balance":
+            await update.message.reply_text(
+                "ℹ️ You can only withdraw from Referral Balance after referring 10 people and the minimum withdrawal is ₦20,000."
+            )
+
+        await update.message.reply_text(
+            f"Enter the amount you want to withdraw from your {context.user_data['withdraw']['balance_label']}:"
+        )
+        context.user_data["withdraw_state"] = ASK_WITHDRAW_AMOUNT
+        return
+
+    elif context.user_data.get("withdraw_state") == ASK_WITHDRAW_AMOUNT:
+        try:
+            amount = int(text)
+        except ValueError:
+            await update.message.reply_text("❌ Please enter a valid amount.")
+            return
+
+        details = context.user_data["withdraw"]
+        referrals = details["referrals"]
+        balance_type = details["balance_type"]
+        balance_label = details["balance_label"]
+        main = details["main"]
+        reward = details["reward"]
+        earning = details["earning"]
+        referral = details["referral"]
+
+        # Criteria checks
+        if balance_type == "reward_balance" and referrals < 10:
+            await update.message.reply_text("❌ You need at least 10 referrals to withdraw from Reward Balance.")
+            return
+        if balance_type == "earning_balance":
+            if referrals < 10:
+                await update.message.reply_text("❌ You need at least 10 referrals to withdraw from Earning Balance.")
+                return
+            if amount < 45000:
+                await update.message.reply_text("❌ Minimum withdrawal from Earning Balance is ₦45,000.")
+                return
+        if balance_type == "referral_balance":
+            if referrals < 10:
+                await update.message.reply_text("❌ You need at least 10 referrals to withdraw from Referral Balance.")
+                return
+            if amount < 20000:
+                await update.message.reply_text("❌ Minimum withdrawal from Referral Balance is ₦20,000.")
+                return
+
+        # Check sufficient balance
+        if balance_type == "main_balance" and amount > main:
+            await update.message.reply_text("❌ Insufficient Main Balance.")
+            return
+        if balance_type == "reward_balance" and amount > reward:
+            await update.message.reply_text("❌ Insufficient Reward Balance.")
+            return
+        if balance_type == "earning_balance" and amount > earning:
+            await update.message.reply_text("❌ Insufficient Earning Balance.")
+            return
+        if balance_type == "referral_balance" and amount > referral:
+            await update.message.reply_text("❌ Insufficient Referral Balance.")
+            return
+
+        # Save withdrawal request to DB
+        conn = await asyncpg.connect(POSTGRES_URL)
+        await conn.execute(
+            "INSERT INTO withdrawals (user_id, bank_name, account_number, account_name, balance_type, amount) VALUES ($1, $2, $3, $4, $5, $6)",
+            user_id, details['bank_name'], details['account_number'], details['account_name'], balance_type, amount
+        )
+        await conn.close()
+
+        # Notify user
+        await update.message.reply_text(
+            f"✅ Withdrawal Request:\n"
+            f"Bank: {details['bank_name']}\n"
+            f"Account Number: {details['account_number']}\n"
+            f"Account Name: {details['account_name']}\n"
+            f"Balance: {balance_label}\n"
+            f"Amount: ₦{amount}\n\n"
+            "Your request has been received. An admin will process it soon.",
+            reply_markup=get_main_keyboard(user_id)
+        )
+
+        # Notify admin
+        admin_msg = (
+            f"💸 New Withdrawal Request\n"
+            f"User ID: {user_id}\n"
+            f"Bank: {details['bank_name']}\n"
+            f"Account Number: {details['account_number']}\n"
+            f"Account Name: {details['account_name']}\n"
+            f"Balance: {balance_label}\n"
+            f"Amount: ₦{amount}\n"
+            f"Referrals: {referrals}"
+        )
+        await context.bot.send_message(ADMIN_ID, admin_msg)
+
+        context.user_data["withdraw_state"] = None
+        context.user_data["withdraw"] = {}
+        return
+
+    # --- MAIN USER/ADMIN MENU ---
+    elif text == "👤 Profile":
+        conn = await asyncpg.connect(POSTGRES_URL)
+        row = await conn.fetchrow("SELECT completed_tasks, main_balance, reward_balance, earning_balance, referral_balance, name, email, gender FROM users WHERE user_id = $1", user_id)
+        await conn.close()
+        tasks = row["completed_tasks"] if row else 0
+        main_balance = row["main_balance"] if row else 0
+        reward_balance = row["reward_balance"] if row else 0
+        earning_balance = row["earning_balance"] if row else 0
+        referral_balance = row["referral_balance"] if row else 0
+        name = row["name"] if row else "N/A"
+        email = row["email"] if row else "N/A"
+        gender = row["gender"] if row else "N/A"
+        await update.message.reply_text(
+            f"👤 Profile\nID: {user_id}\nName: {name}\nEmail: {email}\nGender: {gender}\n"
+            f"✅ Tasks Done: {tasks}\n"
+            f"💰 Main Balance: {main_balance}\n"
+            f"🎁 Reward Balance: {reward_balance}\n"
+            f"🪙 Earning Balance: {earning_balance}\n"
+            f"👥 Referral Balance: {referral_balance}"
         )
 
     elif text == "📝 Tasks":
@@ -371,13 +618,24 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🔗 Referrals":
         conn = await asyncpg.connect(POSTGRES_URL)
         row = await conn.fetchrow("SELECT referrals FROM users WHERE user_id = $1", user_id)
-        await conn.close()
-        referrals = row["referrals"] if row else 0
+        referrals_count = row["referrals"] if row else 0
         bot_username = (await context.bot.get_me()).username
         referral_link = f"https://t.me/{bot_username}?start={user_id}"
+        referred_rows = await conn.fetch(
+            "SELECT referred_id, reward_amount, referred_at FROM referrals WHERE referrer_id = $1", user_id
+        )
+        await conn.close()
+        if referred_rows:
+            referred_list = "\n".join(
+                [f"• {r['referred_id']} | ₦{r['reward_amount']} | {r['referred_at'].strftime('%Y-%m-%d')}" for r in referred_rows]
+            )
+            referred_text = f"\n\n👥 Your Referrals:\n{referred_list}"
+        else:
+            referred_text = "\n\nYou have not referred anyone yet."
         await update.message.reply_text(
-            f"📊 You have referred {referrals} users.\n"
+            f"📊 You have referred {referrals_count} users.\n"
             f"🔗 Your referral link:\n{referral_link}"
+            f"{referred_text}"
         )
 
     elif text == "🏧 Withdrawal":
@@ -398,14 +656,15 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🎁 Daily Login Reward":
         now = int(time.time())
         conn = await asyncpg.connect(POSTGRES_URL)
-        row = await conn.fetchrow("SELECT last_daily_claim FROM users WHERE user_id = $1", user_id)
+        row = await conn.fetchrow("SELECT last_daily_claim, referrals FROM users WHERE user_id = $1", user_id)
         last_claim = row["last_daily_claim"] if row else 0
-        reward = 100
+        referrals = row["referrals"] if row else 0
+        reward = 100 + (referrals * 50)
         if now - last_claim >= 86400:  # 24 hours
             await conn.execute(
                 "UPDATE users SET earning_balance = earning_balance + $1, last_daily_claim = $2 WHERE user_id = $3",
                 reward, now, user_id
-            )
+        )
             await conn.close()
             await update.message.reply_text(
                 f"🎉 Daily login reward claimed!\n"
@@ -423,8 +682,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⏳ You have already claimed your daily reward.\n"
                 f"Come back in {hours}h {minutes}m.",
                 reply_markup=get_main_keyboard(user_id)
-            )
-
+        )
     elif text == "✅ Join Channel (₦1000)":
         if await has_completed_task(user_id, "joined_channel"):
             await update.message.reply_text("✅ You have already claimed this reward.", reply_markup=get_main_keyboard(user_id))
