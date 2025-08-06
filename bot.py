@@ -1111,11 +1111,8 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text == "💳 Deposit":
         await update.message.reply_text(
-            "💳 To deposit, please send your payment to the following account:\n\n"
-            "Bank: Example Bank\n"
-            "Account Number: 1234567890\n"
-            "Account Name: Your Company Name\n\n"
-            "After payment, send your proof of payment here and an admin will credit your main balance."
+            "💳 To deposit, please send your payment query to @PaymentQueries\n\n"
+            "After payment, it would credit your main balance."
         )
 
     elif text == "🛎️ Services":
