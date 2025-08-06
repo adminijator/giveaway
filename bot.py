@@ -502,12 +502,13 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ["⬅️ Go Back", "🏠 Main Menu"]
                 ]
                 await update.message.reply_text(
-                    "💸 Which balance do you want to withdraw from?\n\n"
-                    "• Main Balance: Withdraw anytime, any amount.\n"
-                    "• Reward Balance: Withdraw anytime, any amount **after 10 referrals**.\n"
-                    "• Earning Balance: Withdraw only if you have **10 referrals** and minimum ₦45,000.\n"
-                    "• Referral Balance: Withdraw only if you have **10 referrals** and minimum ₦20,000.",
-                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+                    "💸 <b>Which balance do you want to withdraw from?</b>\n\n"
+                    "• <b>Main Balance</b>: <i>Withdraw anytime, any amount.</i>\n"
+                    "• <b>Reward Balance</b>: <i>Withdraw anytime, any amount — <b>after 10 referrals</b>.</i>\n"
+                    "• <b>Earning Balance</b>: <i>Withdraw only if you have <b>10 referrals</b> and a minimum of ₦30,000.</i>\n"
+                    "• <b>Referral Balance</b>: <i>Withdraw only if you have <b>10 referrals</b> and a minimum of ₦15,000.</i>",
+                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True),
+                    parse_mode="HTML"
                 )
                 context.user_data["withdraw_state"] = CHOOSE_BALANCE
                 context.user_data["withdraw"] = {
@@ -613,11 +614,11 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         elif context.user_data["withdraw"]["balance_label"] == "Earning Balance":
             await update.message.reply_text(
-                "ℹ️ You can only withdraw from Earning Balance after referring 10 people and the minimum withdrawal is ₦45,000.", reply_markup=get_go_back_keyboard()
+                "ℹ️ You can only withdraw from Earning Balance after referring 10 people and the minimum withdrawal is ₦30,000.", reply_markup=get_go_back_keyboard()
             )
         elif context.user_data["withdraw"]["balance_label"] == "Referral Balance":
             await update.message.reply_text(
-                "ℹ️ You can only withdraw from Referral Balance after referring 10 people and the minimum withdrawal is ₦20,000.", reply_markup=get_go_back_keyboard()
+                "ℹ️ You can only withdraw from Referral Balance after referring 10 people and the minimum withdrawal is ₦15,000.", reply_markup=get_go_back_keyboard()
             )
 
         await update.message.reply_text(
@@ -657,15 +658,15 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if referrals < 10:
                 await update.message.reply_text("❌ You need at least 10 referrals to withdraw from Earning Balance.", reply_markup=get_go_back_keyboard())
                 return
-            if amount < 45000:
-                await update.message.reply_text("❌ Minimum withdrawal from Earning Balance is ₦45,000.", reply_markup=get_go_back_keyboard())
+            if amount < 30000:
+                await update.message.reply_text("❌ Minimum withdrawal from Earning Balance is ₦30,000.", reply_markup=get_go_back_keyboard())
                 return
         if balance_type == "referral_balance":
             if referrals < 10:
                 await update.message.reply_text("❌ You need at least 10 referrals to withdraw from Referral Balance.", reply_markup=get_go_back_keyboard())
                 return
-            if amount < 20000:
-                await update.message.reply_text("❌ Minimum withdrawal from Referral Balance is ₦20,000.", reply_markup=get_go_back_keyboard())
+            if amount < 15000:
+                await update.message.reply_text("❌ Minimum withdrawal from Referral Balance is ₦15,000.", reply_markup=get_go_back_keyboard())
                 return
 
         # Check sufficient balance
